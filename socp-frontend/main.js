@@ -13,15 +13,30 @@ const groupMembers = document.getElementById('groupMembers');
 const createGroupConfirm = document.getElementById('createGroupConfirm');
 const createGroupCancel = document.getElementById('createGroupCancel');
 
+// Authentication DOM elements
+const authOverlay = document.getElementById('authOverlay');
+const chatContainer = document.getElementById('chatContainer');
+const authForm = document.getElementById('authForm');
+const authTitle = document.getElementById('authTitle');
+const usernameInput = document.getElementById('usernameInput');
+const passwordInput = document.getElementById('passwordInput');
+const authSubmitBtn = document.getElementById('authSubmitBtn');
+const authToggle = document.getElementById('authToggle');
+const userInfo = document.getElementById('userInfo');
+const userAvatar = document.getElementById('userAvatar');
+const userName = document.getElementById('userName');
+const userStatus = document.getElementById('userStatus');
+const logoutBtn = document.getElementById('logoutBtn');
+
 // Application state
 let currentChat = null;
 let currentChatType = null; // 'user', 'group', 'public'
 let onlineUsers = [];
 let groups = [];
 let currentUserId = null;
-
-// WebSocket connection
-const socket = new WebSocket('ws://localhost:8765');
+let isLoggedIn = false;
+let isRegisterMode = false;
+let socket = null;
 
 // Helper function to add messages to chat
 function addMessage(content, type = 'received', sender = null) {
@@ -63,17 +78,157 @@ function updateConnectionStatus(isConnected) {
     }
 }
 
-// Helper function to update user list
-function updateUserList(users) {
-    onlineUsers = users;
+// Authentication functions
+function showAuthOverlay() {
+    authOverlay.style.display = 'flex';
+    chatContainer.style.display = 'none';
+    isLoggedIn = false;
+}
+
+function hideAuthOverlay() {
+    authOverlay.style.display = 'none';
+    chatContainer.style.display = 'flex';
+    isLoggedIn = true;
+}
+
+function toggleAuthMode() {
+    isRegisterMode = !isRegisterMode;
+    if (isRegisterMode) {
+        authTitle.textContent = 'Register for SOCP Chat';
+        authSubmitBtn.textContent = 'Register';
+        authToggle.textContent = 'Already have an account? Login';
+    } else {
+        authTitle.textContent = 'Login to SOCP Chat';
+        authSubmitBtn.textContent = 'Login';
+        authToggle.textContent = "Don't have an account? Register";
+    }
+}
+
+function updateUserInfo(username) {
+    currentUserId = username;
+    userName.textContent = username;
+    userAvatar.textContent = username.charAt(0).toUpperCase();
+    userStatus.textContent = 'Online';
+}
+
+function connectWebSocket() {
+    if (socket) {
+        socket.close();
+    }
+    
+    socket = new WebSocket('ws://localhost:8765');
+    
+    socket.onopen = () => {
+        addMessage('Connected to chat server', 'system');
+        updateConnectionStatus(true);
+        sendBtn.disabled = false;
+        
+        // Send user authentication
+        socket.send(JSON.stringify({
+            type: 'USER_AUTH',
+            payload: {
+                username: currentUserId,
+                action: 'login'
+            }
+        }));
+        
+        // Request user list
+        socket.send(JSON.stringify({
+            type: 'CLIENT_COMMAND',
+            payload: {
+                cmd: '/list'
+            }
+        }));
+    };
+    
+    socket.onmessage = handleWebSocketMessage;
+    socket.onclose = () => {
+        addMessage('Connection closed', 'system');
+        updateConnectionStatus(false);
+        sendBtn.disabled = true;
+        input.disabled = true;
+    };
+    
+    socket.onerror = (error) => {
+        addMessage('Connection error occurred', 'error');
+        updateConnectionStatus(false);
+        sendBtn.disabled = true;
+        input.disabled = true;
+    };
+}
+
+function handleWebSocketMessage(event) {
+    try {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === 'LIST') {
+            updateUserList(data.payload.online || [], data.payload.users || []);
+        } else if (data.type === 'USER_DELIVER') {
+            // Handle incoming messages
+            const payload = data.payload;
+            let messageContent = '';
+            let sender = data.from || 'Unknown';
+            
+            // Try to decrypt message if it's encrypted
+            if (payload.ciphertext) {
+                // In a real implementation, you would decrypt here
+                messageContent = '[Encrypted Message]';
+            } else {
+                messageContent = payload.text || payload.message || 'Unknown message format';
+            }
+            
+            addMessage(messageContent, 'received', sender);
+        } else if (data.type === 'ACK') {
+            // Handle acknowledgments
+            console.log('Received ACK:', data.payload);
+        } else if (data.type === 'GROUP_CREATED') {
+            // Handle group creation response
+            const payload = data.payload;
+            addGroupToList(payload.group_id, payload.group_name);
+            addMessage(`Group "${payload.group_name}" created successfully!`, 'system');
+            // Automatically select the new group
+            selectChat(payload.group_id, 'group');
+        } else if (data.type === 'AUTH_SUCCESS') {
+            // Handle successful authentication
+            hideAuthOverlay();
+            updateUserInfo(data.payload.username);
+            addMessage(`Welcome, ${data.payload.username}!`, 'system');
+        } else if (data.type === 'AUTH_ERROR') {
+            // Handle authentication error
+            addMessage(data.payload.message || 'Authentication failed', 'error');
+        } else if (data.type === 'USER_STATUS_UPDATE') {
+            // Handle user status updates
+            updateUserStatus(data.payload);
+        } else {
+            // Handle other message types
+            addMessage(data.payload?.message || 'Unknown message', 'received');
+        }
+    } catch (e) {
+        // Fallback for non-JSON messages
+        addMessage(event.data, 'received');
+    }
+}
+
+// Helper function to update user list with online/offline status
+function updateUserList(onlineUsers, allUsers = []) {
+    onlineUsers = onlineUsers || [];
+    allUsers = allUsers || [];
+    
+    // Create a set of online users for quick lookup
+    const onlineSet = new Set(onlineUsers);
+    
+    // Combine online and offline users, removing duplicates
+    const allUniqueUsers = [...new Set([...onlineUsers, ...allUsers])];
+    
     userList.innerHTML = '';
     
-    if (users.length === 0) {
-        userList.innerHTML = '<div class="empty-state">No users online</div>';
+    if (allUniqueUsers.length === 0) {
+        userList.innerHTML = '<div class="empty-state">No users found</div>';
         return;
     }
     
-    users.forEach(user => {
+    allUniqueUsers.forEach(user => {
+        const isOnline = onlineSet.has(user);
         const userItem = document.createElement('div');
         userItem.className = 'user-item';
         userItem.dataset.userId = user;
@@ -92,10 +247,10 @@ function updateUserList(users) {
         
         const status = document.createElement('div');
         status.className = 'user-status';
-        status.textContent = 'Online';
+        status.textContent = isOnline ? 'Online' : 'Offline';
         
         const indicator = document.createElement('div');
-        indicator.className = 'online-indicator';
+        indicator.className = isOnline ? 'online-indicator' : 'offline-indicator';
         
         info.appendChild(name);
         info.appendChild(status);
@@ -106,6 +261,27 @@ function updateUserList(users) {
         userItem.addEventListener('click', () => selectChat(user, 'user'));
         userList.appendChild(userItem);
     });
+}
+
+function updateUserStatus(statusData) {
+    // Update user status in the list
+    const userItem = document.querySelector(`[data-user-id="${statusData.username}"]`);
+    if (userItem) {
+        const statusElement = userItem.querySelector('.user-status');
+        const indicator = userItem.querySelector('.online-indicator, .offline-indicator');
+        
+        if (statusData.online) {
+            statusElement.textContent = 'Online';
+            if (indicator) {
+                indicator.className = 'online-indicator';
+            }
+        } else {
+            statusElement.textContent = 'Offline';
+            if (indicator) {
+                indicator.className = 'offline-indicator';
+            }
+        }
+    }
 }
 
 // Helper function to add group to list
@@ -231,75 +407,70 @@ function createGroup() {
     // Note: Group will be added to list and selected when server responds with GROUP_CREATED
 }
 
-// WebSocket event handlers
-socket.onopen = () => {
-    addMessage('Connected to chat server', 'system');
-    updateConnectionStatus(true);
-    sendBtn.disabled = false;
+// Authentication event handlers
+authForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const username = usernameInput.value.trim();
+    const password = passwordInput.value.trim();
     
-    // Request user list
-    socket.send(JSON.stringify({
-        type: 'CLIENT_COMMAND',
-        payload: {
-            cmd: '/list'
-        }
-    }));
-};
-
-socket.onmessage = (event) => {
-    try {
-        const data = JSON.parse(event.data);
-        
-        if (data.type === 'LIST') {
-            updateUserList(data.payload.online || []);
-        } else if (data.type === 'USER_DELIVER') {
-            // Handle incoming messages
-            const payload = data.payload;
-            let messageContent = '';
-            let sender = data.from || 'Unknown';
-            
-            // Try to decrypt message if it's encrypted
-            if (payload.ciphertext) {
-                // In a real implementation, you would decrypt here
-                messageContent = '[Encrypted Message]';
-            } else {
-                messageContent = payload.text || payload.message || 'Unknown message format';
-            }
-            
-            addMessage(messageContent, 'received', sender);
-        } else if (data.type === 'ACK') {
-            // Handle acknowledgments
-            console.log('Received ACK:', data.payload);
-        } else if (data.type === 'GROUP_CREATED') {
-            // Handle group creation response
-            const payload = data.payload;
-            addGroupToList(payload.group_id, payload.group_name);
-            addMessage(`Group "${payload.group_name}" created successfully!`, 'system');
-            // Automatically select the new group
-            selectChat(payload.group_id, 'group');
-        } else {
-            // Handle other message types
-            addMessage(data.payload?.message || 'Unknown message', 'received');
-        }
-    } catch (e) {
-        // Fallback for non-JSON messages
-        addMessage(event.data, 'received');
+    if (!username || !password) {
+        addMessage('Please enter both username and password', 'error');
+        return;
     }
-};
+    
+    // For demo purposes, we'll simulate authentication
+    // In a real implementation, this would send to the server
+    if (isRegisterMode) {
+        // Simulate registration
+        localStorage.setItem('socp_username', username);
+        localStorage.setItem('socp_password', password);
+        addMessage('Registration successful! Please login.', 'system');
+        toggleAuthMode();
+    } else {
+        // Simulate login
+        const storedUsername = localStorage.getItem('socp_username');
+        const storedPassword = localStorage.getItem('socp_password');
+        
+        if (username === storedUsername && password === storedPassword) {
+            currentUserId = username;
+            hideAuthOverlay();
+            updateUserInfo(username);
+            connectWebSocket();
+        } else {
+            addMessage('Invalid username or password', 'error');
+        }
+    }
+    
+    usernameInput.value = '';
+    passwordInput.value = '';
+});
 
-socket.onclose = () => {
-    addMessage('Connection closed', 'system');
-    updateConnectionStatus(false);
-    sendBtn.disabled = true;
-    input.disabled = true;
-};
+authToggle.addEventListener('click', toggleAuthMode);
 
-socket.onerror = (error) => {
-    addMessage('Connection error occurred', 'error');
-    updateConnectionStatus(false);
-    sendBtn.disabled = true;
-    input.disabled = true;
-};
+logoutBtn.addEventListener('click', () => {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        // Notify server about logout
+        socket.send(JSON.stringify({
+            type: 'USER_AUTH',
+            payload: {
+                username: currentUserId,
+                action: 'logout'
+            }
+        }));
+    }
+    
+    if (socket) {
+        socket.close();
+    }
+    
+    // Clear stored credentials
+    localStorage.removeItem('socp_username');
+    localStorage.removeItem('socp_password');
+    
+    showAuthOverlay();
+    currentUserId = null;
+    isLoggedIn = false;
+});
 
 // Event listeners
 sendBtn.onclick = sendMessage;
@@ -331,9 +502,20 @@ document.querySelector('[data-id="public"]').addEventListener('click', () => {
     selectChat('public', 'public');
 });
 
-// Focus input on load
+// Initialize application
 window.addEventListener('load', () => {
-    input.focus();
+    // Check if user is already logged in
+    const storedUsername = localStorage.getItem('socp_username');
+    if (storedUsername) {
+        // Auto-login if credentials exist
+        currentUserId = storedUsername;
+        hideAuthOverlay();
+        updateUserInfo(storedUsername);
+        connectWebSocket();
+    } else {
+        // Show login form
+        showAuthOverlay();
+    }
 });
 
 // Disable send button initially

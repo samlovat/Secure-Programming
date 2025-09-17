@@ -1,12 +1,67 @@
 import json, os
 from utils.envelope import Envelope, now_ms
 from crypto.rsa_aes import aes256gcm_encrypt
-USER_TYPES = {"USER_HELLO","MSG_DIRECT","MSG_PUBLIC_CHANNEL","MSG_GROUP","FILE_START","FILE_CHUNK","FILE_END"}
+USER_TYPES = {"USER_HELLO","USER_AUTH","MSG_DIRECT","MSG_PUBLIC_CHANNEL","MSG_GROUP","FILE_START","FILE_CHUNK","FILE_END"}
+
+async def broadcast_user_status_update(state, username, is_online):
+    """Broadcast user status update to all connected users"""
+    status_update = {
+        "type": "USER_STATUS_UPDATE",
+        "from": state.server_id,
+        "to": "*",
+        "ts": now_ms(),
+        "payload": {
+            "username": username,
+            "online": is_online
+        }
+    }
+    
+    # Send to all local users
+    for uid, uws in list(state.local_users.items()):
+        if uid != username:  # Don't send to the user themselves
+            try:
+                await uws.send(json.dumps(status_update))
+            except:
+                # Remove disconnected users
+                if uid in state.local_users:
+                    del state.local_users[uid]
+                    state.user_locations[uid] = None
 
 async def handle_user_message(state, router, ws, env: dict):
     t = env.get("type")
     if t == "USER_HELLO":
         await ws.send(json.dumps({"type":"ACK","from":state.server_id,"to":env.get("from"),"ts":now_ms(),"payload":{"msg_ref":"USER_HELLO"}}))
+        return
+
+    if t == "USER_AUTH":
+        username = env.get("payload", {}).get("username")
+        action = env.get("payload", {}).get("action", "login")
+        
+        if not username:
+            await ws.send(json.dumps({"type":"AUTH_ERROR","from":state.server_id,"to":env.get("from"),"ts":now_ms(),"payload":{"message":"Username required"}}))
+            return
+        
+        # For demo purposes, we'll accept any username
+        # In a real implementation, you would validate credentials against database
+        if action == "login":
+            # Add user to local users and update location
+            state.local_users[username] = ws
+            state.user_locations[username] = "local"
+            
+            # Notify other users about new user coming online
+            await broadcast_user_status_update(state, username, True)
+            
+            await ws.send(json.dumps({"type":"AUTH_SUCCESS","from":state.server_id,"to":username,"ts":now_ms(),"payload":{"username":username}}))
+        elif action == "logout":
+            # Remove user from local users
+            if username in state.local_users:
+                del state.local_users[username]
+                state.user_locations[username] = None
+                
+                # Notify other users about user going offline
+                await broadcast_user_status_update(state, username, False)
+                
+            await ws.send(json.dumps({"type":"AUTH_SUCCESS","from":state.server_id,"to":username,"ts":now_ms(),"payload":{"username":username,"action":"logout"}}))
         return
 
     if t == "MSG_DIRECT":
@@ -44,7 +99,7 @@ async def handle_user_message(state, router, ws, env: dict):
         parts = cmd.split(" ", 2)
         if parts and parts[0] == "/list":
             online = sorted([u for u, loc in state.user_locations.items() if loc])
-            await ws.send(json.dumps({"type":"LIST","from":state.server_id,"to":env.get("from"),"ts":now_ms(),"payload":{"online":online}}))
+            await ws.send(json.dumps({"type":"LIST","from":state.server_id,"to":env.get("from"),"ts":now_ms(),"payload":{"online":online,"users":list(state.user_locations.keys())}}))
             return
         if parts and parts[0] == "/tell" and len(parts) >= 3:
             target, text = parts[1], parts[2]
