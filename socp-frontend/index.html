@@ -2,13 +2,496 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>SOCP WebSocket Test</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SOCP Chat System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .chat-container {
+            width: 90%;
+            max-width: 1000px;
+            height: 80vh;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            display: flex;
+            overflow: hidden;
+        }
+
+        .sidebar {
+            width: 300px;
+            background: #f8f9fa;
+            border-right: 1px solid #e1e5e9;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .main-chat {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .sidebar-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            text-align: center;
+            position: relative;
+        }
+
+        .chat-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            text-align: center;
+            position: relative;
+        }
+
+        .chat-header h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+
+        .connection-status {
+            position: absolute;
+            top: 15px;
+            right: 20px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ff4757;
+            transition: background-color 0.3s ease;
+        }
+
+        .connection-status.connected {
+            background: #2ed573;
+        }
+
+        .sidebar-content {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .section-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: #666;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .user-list, .group-list {
+            margin-bottom: 20px;
+        }
+
+        .user-item, .group-item {
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            margin-bottom: 5px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+        }
+
+        .user-item:hover, .group-item:hover {
+            background: #e9ecef;
+        }
+
+        .user-item.active, .group-item.active {
+            background: #667eea;
+            color: white;
+        }
+
+        .user-avatar, .group-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: #667eea;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+            font-weight: 600;
+            margin-right: 10px;
+        }
+
+        .group-avatar {
+            background: #764ba2;
+        }
+
+        .user-info, .group-info {
+            flex: 1;
+        }
+
+        .user-name, .group-name {
+            font-weight: 500;
+            font-size: 0.9rem;
+        }
+
+        .user-status {
+            font-size: 0.8rem;
+            color: #666;
+        }
+
+        .user-item.active .user-status {
+            color: rgba(255, 255, 255, 0.8);
+        }
+
+        .online-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #2ed573;
+            margin-left: auto;
+        }
+
+        .offline-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #bdc3c7;
+            margin-left: auto;
+        }
+
+        .create-group-btn {
+            width: 100%;
+            padding: 10px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+            margin-bottom: 15px;
+        }
+
+        .create-group-btn:hover {
+            background: #5a6fd8;
+        }
+
+        .group-form {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border: 1px solid #e1e5e9;
+            display: none;
+        }
+
+        .group-form.active {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 10px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 0.8rem;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #e1e5e9;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .form-buttons {
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn-primary, .btn-secondary {
+            flex: 1;
+            padding: 8px;
+            border: none;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            cursor: pointer;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5a6fd8;
+        }
+
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            background: #f8f9fa;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .message {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            word-wrap: break-word;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .message.sent {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            align-self: flex-end;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.received {
+            background: white;
+            color: #333;
+            align-self: flex-start;
+            border: 1px solid #e1e5e9;
+            border-bottom-left-radius: 4px;
+        }
+
+        .message.system {
+            background: #ffeaa7;
+            color: #2d3436;
+            align-self: center;
+            font-size: 0.9rem;
+            text-align: center;
+            max-width: 90%;
+        }
+
+        .message.error {
+            background: #ff7675;
+            color: white;
+            align-self: center;
+            font-size: 0.9rem;
+            text-align: center;
+            max-width: 90%;
+        }
+
+        .chat-input-container {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #e1e5e9;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .chat-input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #e1e5e9;
+            border-radius: 25px;
+            font-size: 1rem;
+            outline: none;
+            transition: border-color 0.3s ease;
+        }
+
+        .chat-input:focus {
+            border-color: #667eea;
+        }
+
+        .send-button {
+            padding: 12px 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 25px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            min-width: 80px;
+        }
+
+        .send-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .send-button:active {
+            transform: translateY(0);
+        }
+
+        .send-button:disabled {
+            background: #bdc3c7;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .empty-state {
+            text-align: center;
+            color: #7f8c8d;
+            font-style: italic;
+            margin-top: 50px;
+        }
+
+        /* Scrollbar styling */
+        .chat-messages::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .chat-messages::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+
+        .chat-messages::-webkit-scrollbar-thumb {
+            background: #c1c1c1;
+            border-radius: 3px;
+        }
+
+        .chat-messages::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8;
+        }
+
+        /* Mobile responsiveness */
+        @media (max-width: 768px) {
+            .chat-container {
+                width: 95%;
+                height: 90vh;
+                border-radius: 15px;
+                flex-direction: column;
+            }
+
+            .sidebar {
+                width: 100%;
+                height: 200px;
+                border-right: none;
+                border-bottom: 1px solid #e1e5e9;
+            }
+
+            .main-chat {
+                flex: 1;
+            }
+
+            .message {
+                max-width: 85%;
+            }
+
+            .chat-header h1, .sidebar-header h1 {
+                font-size: 1.3rem;
+            }
+
+            .chat-input-container {
+                padding: 15px;
+            }
+        }
+    </style>
 </head>
 <body>
-    <h1>SOCP WebSocket Test</h1>
-    <input id="msgInput" type="text" placeholder="Type a message..." />
-    <button id="sendBtn">Send</button>
-    <pre id="log"></pre>
+    <div class="chat-container">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h1>SOCP Chat</h1>
+                <div class="connection-status" id="connectionStatus"></div>
+            </div>
+            
+            <div class="sidebar-content">
+                <button class="create-group-btn" id="createGroupBtn">+ Create Group</button>
+                
+                <div class="group-form" id="groupForm">
+                    <div class="form-group">
+                        <label for="groupName">Group Name</label>
+                        <input type="text" id="groupName" placeholder="Enter group name">
+                    </div>
+                    <div class="form-group">
+                        <label for="groupMembers">Members (comma-separated)</label>
+                        <input type="text" id="groupMembers" placeholder="user1, user2, user3">
+                    </div>
+                    <div class="form-buttons">
+                        <button class="btn-primary" id="createGroupConfirm">Create</button>
+                        <button class="btn-secondary" id="createGroupCancel">Cancel</button>
+                    </div>
+                </div>
+                
+                <div class="section-title">Groups</div>
+                <div class="group-list" id="groupList">
+                    <div class="group-item" data-type="public" data-id="public">
+                        <div class="group-avatar">#</div>
+                        <div class="group-info">
+                            <div class="group-name">Public Channel</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="section-title">Online Users</div>
+                <div class="user-list" id="userList">
+                    <div class="empty-state">No users online</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Main Chat Area -->
+        <div class="main-chat">
+            <div class="chat-header">
+                <h1 id="chatTitle">Select a chat</h1>
+            </div>
+            
+            <div class="chat-messages" id="chatMessages">
+                <div class="empty-state">Select a user or group to start chatting...</div>
+            </div>
+            
+            <div class="chat-input-container">
+                <input type="text" id="msgInput" class="chat-input" placeholder="Type your message..." />
+                <button id="sendBtn" class="send-button">Send</button>
+            </div>
+        </div>
+    </div>
+    
     <script src="main.js"></script>
 </body>
 </html>
