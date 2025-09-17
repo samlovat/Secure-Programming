@@ -132,13 +132,15 @@ function connectWebSocket() {
             }
         }));
         
-        // Request user list
-        socket.send(JSON.stringify({
-            type: 'CLIENT_COMMAND',
-            payload: {
-                cmd: '/list'
-            }
-        }));
+        // Request user list after a short delay to ensure auth is processed
+        setTimeout(() => {
+            socket.send(JSON.stringify({
+                type: 'CLIENT_COMMAND',
+                payload: {
+                    cmd: '/list'
+                }
+            }));
+        }, 500);
     };
     
     socket.onmessage = handleWebSocketMessage;
@@ -424,7 +426,7 @@ authForm.addEventListener('submit', (e) => {
         // Simulate registration
         localStorage.setItem('socp_username', username);
         localStorage.setItem('socp_password', password);
-        addMessage('Registration successful! Please login.', 'system');
+        alert('Registration successful! Please login.');
         toggleAuthMode();
     } else {
         // Simulate login
@@ -436,8 +438,11 @@ authForm.addEventListener('submit', (e) => {
             hideAuthOverlay();
             updateUserInfo(username);
             connectWebSocket();
+        } else if (!storedUsername) {
+            alert('No account found. Please register first.');
+            toggleAuthMode();
         } else {
-            addMessage('Invalid username or password', 'error');
+            alert('Invalid username or password');
         }
     }
     
