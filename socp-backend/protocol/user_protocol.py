@@ -1,6 +1,6 @@
 import json, os
 from utils.envelope import Envelope, now_ms
-from crypto.rsa_aes import aes256gcm_encrypt
+from crypto.rsa_aes import rsa_oaep_wrap
 USER_TYPES = {"USER_HELLO","USER_AUTH","MSG_DIRECT","MSG_PUBLIC_CHANNEL","MSG_GROUP","FILE_START","FILE_CHUNK","FILE_END"}
 
 async def broadcast_user_status_update(state, username, is_online):
@@ -103,16 +103,18 @@ async def handle_user_message(state, router, ws, env: dict):
             return
         if parts and parts[0] == "/tell" and len(parts) >= 3:
             target, text = parts[1], parts[2]
-            key = os.urandom(32)
-            ct, iv, tag = aes256gcm_encrypt(text.encode(), key)
-            env2 = {"type":"MSG_DIRECT","from":env.get("from"),"to":target,"ts":now_ms(),"payload":{"ciphertext":ct,"iv":iv,"tag":tag,"wrapped_key":"", "sender_pub":"", "content_sig":""}}
+            # Encrypt message directly with recipient's public key (RSA-OAEP)
+            recipient_pub = state.user_public_keys.get(target)  # You must ensure this is set elsewhere
+            ct = rsa_oaep_wrap(recipient_pub, text.encode())
+            env2 = {"type":"MSG_DIRECT","from":env.get("from"),"to":target,"ts":now_ms(),"payload":{"ciphertext":ct,"sender_pub":"", "content_sig":""}}
             await router.route_to_user(ws, env2)
             return
         if parts and parts[0] == "/all" and len(parts) >= 2:
             text = parts[1]
-            key = os.urandom(32)
-            ct, iv, tag = aes256gcm_encrypt(text.encode(), key)
-            env2 = {"type":"MSG_PUBLIC_CHANNEL","from":env.get("from"),"to":"public","ts":now_ms(),"payload":{"ciphertext":ct,"iv":iv,"tag":tag,"sender_pub":"","content_sig":""}}            
+            # Encrypt message with all recipients' public keys (broadcast: demo uses server's key)
+            server_pub = state.server_pub
+            ct = rsa_oaep_wrap(server_pub, text.encode())
+            env2 = {"type":"MSG_PUBLIC_CHANNEL","from":env.get("from"),"to":"public","ts":now_ms(),"payload":{"ciphertext":ct,"sender_pub":"","content_sig":""}}
             await handle_user_message(state, router, ws, env2)
             return
         if parts and parts[0] == "/create_group" and len(parts) >= 2:
@@ -124,9 +126,10 @@ async def handle_user_message(state, router, ws, env: dict):
             return
         if parts and parts[0] == "/group" and len(parts) >= 3:
             group_id, text = parts[1], parts[2]
-            key = os.urandom(32)
-            ct, iv, tag = aes256gcm_encrypt(text.encode(), key)
-            env2 = {"type":"MSG_GROUP","from":env.get("from"),"to":group_id,"ts":now_ms(),"payload":{"group_id":group_id,"ciphertext":ct,"iv":iv,"tag":tag,"sender_pub":"","content_sig":""}}
+            # Encrypt message with group public key (demo: use server's key)
+            group_pub = state.server_pub
+            ct = rsa_oaep_wrap(group_pub, text.encode())
+            env2 = {"type":"MSG_GROUP","from":env.get("from"),"to":group_id,"ts":now_ms(),"payload":{"group_id":group_id,"ciphertext":ct,"sender_pub":"","content_sig":""}}
             await handle_user_message(state, router, ws, env2)
             return
         await ws.send(Envelope.error(state.server_id, env.get("from"), "UNKNOWN_TYPE", "Unknown client command"))
