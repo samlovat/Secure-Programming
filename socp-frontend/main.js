@@ -123,22 +123,44 @@ function connectWebSocket() {
         updateConnectionStatus(true);
         sendBtn.disabled = false;
         
+        // Send USER_HELLO first (SOCP v1.3 requirement)
+        socket.send(JSON.stringify({
+            type: 'USER_HELLO',
+            from: currentUserId,
+            to: 'server',
+            ts: Date.now(),
+            payload: {
+                client: 'web-v1.3',
+                pubkey: 'dummy_pubkey', // In real implementation, would be actual RSA public key
+                enc_pubkey: 'dummy_pubkey'
+            },
+            sig: ''
+        }));
+        
         // Send user authentication
         socket.send(JSON.stringify({
             type: 'USER_AUTH',
+            from: currentUserId,
+            to: 'server',
+            ts: Date.now(),
             payload: {
                 username: currentUserId,
                 action: 'login'
-            }
+            },
+            sig: ''
         }));
         
         // Request user list after a short delay to ensure auth is processed
         setTimeout(() => {
             socket.send(JSON.stringify({
                 type: 'CLIENT_COMMAND',
+                from: currentUserId,
+                to: 'server',
+                ts: Date.now(),
                 payload: {
                     cmd: '/list'
-                }
+                },
+                sig: ''
             }));
         }, 500);
     };
@@ -352,30 +374,42 @@ function sendMessage() {
     if (!message || socket.readyState !== WebSocket.OPEN) return;
     
     if (currentChatType === 'user') {
-        // Send direct message
+        // Send direct message using SOCP v1.3 format
         socket.send(JSON.stringify({
             type: 'CLIENT_COMMAND',
+            from: currentUserId,
+            to: 'server',
+            ts: Date.now(),
             payload: {
                 cmd: `/tell ${currentChat} ${message}`
-            }
+            },
+            sig: ''
         }));
         addMessage(message, 'sent');
     } else if (currentChatType === 'group') {
         // Send group message (placeholder - would need backend support)
         socket.send(JSON.stringify({
             type: 'CLIENT_COMMAND',
+            from: currentUserId,
+            to: 'server',
+            ts: Date.now(),
             payload: {
                 cmd: `/group ${currentChat} ${message}`
-            }
+            },
+            sig: ''
         }));
         addMessage(message, 'sent');
     } else if (currentChatType === 'public') {
-        // Send public message
+        // Send public message using SOCP v1.3 format
         socket.send(JSON.stringify({
             type: 'CLIENT_COMMAND',
+            from: currentUserId,
+            to: 'server',
+            ts: Date.now(),
             payload: {
                 cmd: `/all ${message}`
-            }
+            },
+            sig: ''
         }));
         addMessage(message, 'sent');
     }
@@ -393,12 +427,16 @@ function createGroup() {
         return;
     }
     
-    // Send group creation command to server
+    // Send group creation command to server using SOCP v1.3 format
     socket.send(JSON.stringify({
         type: 'CLIENT_COMMAND',
+        from: currentUserId,
+        to: 'server',
+        ts: Date.now(),
         payload: {
             cmd: `/create_group ${name} ${members}`
-        }
+        },
+        sig: ''
     }));
     
     // Reset form
@@ -454,13 +492,17 @@ authToggle.addEventListener('click', toggleAuthMode);
 
 logoutBtn.addEventListener('click', () => {
     if (socket && socket.readyState === WebSocket.OPEN) {
-        // Notify server about logout
+        // Notify server about logout using SOCP v1.3 format
         socket.send(JSON.stringify({
             type: 'USER_AUTH',
+            from: currentUserId,
+            to: 'server',
+            ts: Date.now(),
             payload: {
                 username: currentUserId,
                 action: 'logout'
-            }
+            },
+            sig: ''
         }));
     }
     

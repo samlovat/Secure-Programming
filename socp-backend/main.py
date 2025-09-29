@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(mes
 
 class SOCPServer:
     """
-    Minimal reference implementation of SOCP v1.2 transport & routing.
+    SOCP v1.3 reference implementation of transport & routing.
     This server accepts both Server and User connections on the SAME WS endpoint.
     """
     def __init__(self, host="0.0.0.0", port=8765):
@@ -22,6 +22,7 @@ class SOCPServer:
         self.port = port
         self.state = StateTables()
         self.router = Router(self.state)
+        self.heartbeat_task = None
 
     async def _register(self, ws: WebSocketServerProtocol, role: str, ident: str):
         if role == "server":
@@ -83,8 +84,24 @@ class SOCPServer:
         finally:
             await self._unregister(ws)
 
+    async def heartbeat_loop(self):
+        """SOCP v1.3 Heartbeat loop - send heartbeat every 15s"""
+        while True:
+            try:
+                await asyncio.sleep(15)  # 15 second intervals
+                await self.router.send_heartbeat()
+                await self.router.check_server_health()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logging.error(f"Heartbeat error: {e}")
+
     async def run(self):
-        logging.info(f"SOCP server {self.state.server_id} listening on ws://{self.host}:{self.port}")
+        logging.info(f"SOCP v1.3 server {self.state.server_id} listening on ws://{self.host}:{self.port}")
+        
+        # Start heartbeat task
+        self.heartbeat_task = asyncio.create_task(self.heartbeat_loop())
+        
         async with websockets.serve(self.handler, self.host, self.port, ping_interval=15, ping_timeout=30):
             stop = asyncio.Future()
             for sig in (signal.SIGINT, signal.SIGTERM):
@@ -93,6 +110,14 @@ class SOCPServer:
                 except NotImplementedError:
                     pass
             await stop
+            
+        # Cleanup
+        if self.heartbeat_task:
+            self.heartbeat_task.cancel()
+            try:
+                await self.heartbeat_task
+            except asyncio.CancelledError:
+                pass
 
 if __name__ == "__main__":
     asyncio.run(SOCPServer().run())

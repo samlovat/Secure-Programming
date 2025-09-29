@@ -1,7 +1,13 @@
-import json, os
+import json, os, hashlib
 from utils.envelope import Envelope, now_ms
-from crypto.rsa_aes import rsa_oaep_wrap
-USER_TYPES = {"USER_HELLO","USER_AUTH","MSG_DIRECT","MSG_PUBLIC_CHANNEL","MSG_GROUP","FILE_START","FILE_CHUNK","FILE_END"}
+from crypto.rsa_aes import rsa_oaep_encrypt, rsa_pss_sign, rsa_pss_verify, canonical_payload_hash
+from utils.base64url import b64u_encode as b64u
+
+# SOCP v1.3 User-to-Server Protocol Types
+USER_TYPES = {
+    "USER_HELLO", "USER_AUTH", "MSG_DIRECT", "MSG_PUBLIC_CHANNEL", 
+    "MSG_GROUP", "FILE_START", "FILE_CHUNK", "FILE_END", "CLIENT_COMMAND"
+}
 
 async def broadcast_user_status_update(state, username, is_online):
     """Broadcast user status update to all connected users"""
@@ -29,8 +35,33 @@ async def broadcast_user_status_update(state, username, is_online):
 
 async def handle_user_message(state, router, ws, env: dict):
     t = env.get("type")
+    
     if t == "USER_HELLO":
-        await ws.send(json.dumps({"type":"ACK","from":state.server_id,"to":env.get("from"),"ts":now_ms(),"payload":{"msg_ref":"USER_HELLO"}}))
+        # SOCP v1.3 User Hello - store user's public key
+        payload = env.get("payload", {})
+        user_id = env.get("from")
+        pubkey_b64u = payload.get("pubkey")
+        enc_pubkey_b64u = payload.get("enc_pubkey", pubkey_b64u)
+        
+        if user_id and pubkey_b64u:
+            # Store user's public key for encryption
+            from utils.base64url import b64u_decode
+            from cryptography.hazmat.primitives import serialization
+            try:
+                pubkey_bytes = b64u_decode(pubkey_b64u)
+                pubkey = serialization.load_der_public_key(pubkey_bytes)
+                state.user_public_keys[user_id] = pubkey
+            except Exception as e:
+                logging.warning(f"Failed to load public key for {user_id}: {e}")
+        
+        await ws.send(json.dumps({
+            "type": "ACK",
+            "from": state.server_id,
+            "to": user_id,
+            "ts": now_ms(),
+            "payload": {"msg_ref": "USER_HELLO"},
+            "sig": ""
+        }))
         return
 
     if t == "USER_AUTH":
@@ -38,7 +69,14 @@ async def handle_user_message(state, router, ws, env: dict):
         action = env.get("payload", {}).get("action", "login")
         
         if not username:
-            await ws.send(json.dumps({"type":"AUTH_ERROR","from":state.server_id,"to":env.get("from"),"ts":now_ms(),"payload":{"message":"Username required"}}))
+            await ws.send(json.dumps({
+                "type": "AUTH_ERROR",
+                "from": state.server_id,
+                "to": env.get("from"),
+                "ts": now_ms(),
+                "payload": {"message": "Username required"},
+                "sig": ""
+            }))
             return
         
         # For demo purposes, we'll accept any username
@@ -51,7 +89,14 @@ async def handle_user_message(state, router, ws, env: dict):
             # Notify other users about new user coming online
             await broadcast_user_status_update(state, username, True)
             
-            await ws.send(json.dumps({"type":"AUTH_SUCCESS","from":state.server_id,"to":username,"ts":now_ms(),"payload":{"username":username}}))
+            await ws.send(json.dumps({
+                "type": "AUTH_SUCCESS",
+                "from": state.server_id,
+                "to": username,
+                "ts": now_ms(),
+                "payload": {"username": username},
+                "sig": ""
+            }))
         elif action == "logout":
             # Remove user from local users
             if username in state.local_users:
@@ -61,77 +106,152 @@ async def handle_user_message(state, router, ws, env: dict):
                 # Notify other users about user going offline
                 await broadcast_user_status_update(state, username, False)
                 
-            await ws.send(json.dumps({"type":"AUTH_SUCCESS","from":state.server_id,"to":username,"ts":now_ms(),"payload":{"username":username,"action":"logout"}}))
+            await ws.send(json.dumps({
+                "type": "AUTH_SUCCESS",
+                "from": state.server_id,
+                "to": username,
+                "ts": now_ms(),
+                "payload": {"username": username, "action": "logout"},
+                "sig": ""
+            }))
         return
 
     if t == "MSG_DIRECT":
+        # SOCP v1.3 Direct Message - RSA-only encryption
         await router.route_to_user(ws, env)
         return
 
     if t == "MSG_PUBLIC_CHANNEL":
+        # SOCP v1.3 Public Channel - fan-out to all local users
         sender = env.get("from")
-        # fan-out to local users only in this minimal skeleton
         for uid, uws in list(state.local_users.items()):
             if uid == sender:
                 continue
-            fake_env = {"type":"USER_DELIVER","from":state.server_id,"to":uid,"ts":now_ms(),"payload":env.get("payload",{}),"sig":""}
-            await uws.send(json.dumps(fake_env))
+            deliver_msg = {
+                "type": "USER_DELIVER",
+                "from": state.server_id,
+                "to": uid,
+                "ts": now_ms(),
+                "payload": env.get("payload", {}),
+                "sig": ""
+            }
+            await uws.send(json.dumps(deliver_msg))
         return
 
     if t == "MSG_GROUP":
+        # Group messaging (simplified implementation)
         sender = env.get("from")
         group_id = env.get("payload", {}).get("group_id")
         if group_id:
-            # Fan-out to all local users in the group (simplified - in real implementation, check group membership)
+            # Fan-out to all local users in the group
             for uid, uws in list(state.local_users.items()):
                 if uid == sender:
                     continue
-                fake_env = {"type":"USER_DELIVER","from":state.server_id,"to":uid,"ts":now_ms(),"payload":env.get("payload",{}),"sig":""}
-                await uws.send(json.dumps(fake_env))
+                deliver_msg = {
+                    "type": "USER_DELIVER",
+                    "from": state.server_id,
+                    "to": uid,
+                    "ts": now_ms(),
+                    "payload": env.get("payload", {}),
+                    "sig": ""
+                }
+                await uws.send(json.dumps(deliver_msg))
         return
 
-    if t in {"FILE_START","FILE_CHUNK","FILE_END"}:
+    if t in {"FILE_START", "FILE_CHUNK", "FILE_END"}:
+        # SOCP v1.3 File Transfer - RSA-only encryption
         await router.route_to_user(ws, env)
         return
 
     if t == "CLIENT_COMMAND":
+        # SOCP v1.3 Mandatory Commands
         cmd = env.get("payload", {}).get("cmd", "")
         parts = cmd.split(" ", 2)
+        
         if parts and parts[0] == "/list":
+            # List online users
             online = sorted([u for u, loc in state.user_locations.items() if loc])
-            await ws.send(json.dumps({"type":"LIST","from":state.server_id,"to":env.get("from"),"ts":now_ms(),"payload":{"online":online,"users":list(state.user_locations.keys())}}))
+            await ws.send(json.dumps({
+                "type": "LIST",
+                "from": state.server_id,
+                "to": env.get("from"),
+                "ts": now_ms(),
+                "payload": {"online": online, "users": list(state.user_locations.keys())},
+                "sig": ""
+            }))
             return
+            
         if parts and parts[0] == "/tell" and len(parts) >= 3:
+            # Direct message using RSA-4096
             target, text = parts[1], parts[2]
-            # Encrypt message directly with recipient's public key (RSA-OAEP)
-            recipient_pub = state.user_public_keys.get(target)  # You must ensure this is set elsewhere
-            ct = rsa_oaep_wrap(recipient_pub, text.encode())
-            env2 = {"type":"MSG_DIRECT","from":env.get("from"),"to":target,"ts":now_ms(),"payload":{"ciphertext":ct,"sender_pub":"", "content_sig":""}}
-            await router.route_to_user(ws, env2)
+            recipient_pub = state.user_public_keys.get(target)
+            if recipient_pub:
+                # Encrypt with recipient's public key
+                ciphertext = rsa_oaep_encrypt(recipient_pub, text.encode())
+                # Create content signature
+                content_data = f"{ciphertext}{env.get('from')}{target}{now_ms()}".encode()
+                content_sig = rsa_pss_sign(state.server_priv, content_data)
+                
+                env2 = {
+                    "type": "MSG_DIRECT",
+                    "from": env.get("from"),
+                    "to": target,
+                    "ts": now_ms(),
+                    "payload": {
+                        "ciphertext": ciphertext,
+                        "sender_pub": b64u(state.server_pub.public_bytes(
+                            encoding=serialization.Encoding.DER,
+                            format=serialization.PublicFormat.SubjectPublicKeyInfo
+                        )),
+                        "content_sig": content_sig
+                    },
+                    "sig": ""
+                }
+                await router.route_to_user(ws, env2)
+            else:
+                await ws.send(Envelope.error(state.server_id, env.get("from"), "USER_NOT_FOUND", f"User {target} not found"))
             return
+            
         if parts and parts[0] == "/all" and len(parts) >= 2:
+            # Public channel message using RSA-4096
             text = parts[1]
-            # Encrypt message with all recipients' public keys (broadcast: demo uses server's key)
-            server_pub = state.server_pub
-            ct = rsa_oaep_wrap(server_pub, text.encode())
-            env2 = {"type":"MSG_PUBLIC_CHANNEL","from":env.get("from"),"to":"public","ts":now_ms(),"payload":{"ciphertext":ct,"sender_pub":"","content_sig":""}}
+            # For demo, encrypt with server's key (in real implementation, use public channel key)
+            ciphertext = rsa_oaep_encrypt(state.server_pub, text.encode())
+            content_data = f"{ciphertext}{env.get('from')}{now_ms()}".encode()
+            content_sig = rsa_pss_sign(state.server_priv, content_data)
+            
+            env2 = {
+                "type": "MSG_PUBLIC_CHANNEL",
+                "from": env.get("from"),
+                "to": "public",
+                "ts": now_ms(),
+                "payload": {
+                    "ciphertext": ciphertext,
+                    "sender_pub": b64u(state.server_pub.public_bytes(
+                        encoding=serialization.Encoding.DER,
+                        format=serialization.PublicFormat.SubjectPublicKeyInfo
+                    )),
+                    "content_sig": content_sig
+                },
+                "sig": ""
+            }
             await handle_user_message(state, router, ws, env2)
             return
-        if parts and parts[0] == "/create_group" and len(parts) >= 2:
-            group_name = parts[1]
-            members = parts[2].split(',') if len(parts) > 2 else []
-            group_id = f"group_{env.get('from')}_{now_ms()}"
-            # In a real implementation, you would store this in the database
-            await ws.send(json.dumps({"type":"GROUP_CREATED","from":state.server_id,"to":env.get("from"),"ts":now_ms(),"payload":{"group_id":group_id,"group_name":group_name,"members":members}}))
+            
+        if parts and parts[0] == "/file" and len(parts) >= 3:
+            # File transfer command
+            target, file_path = parts[1], parts[2]
+            # In a real implementation, would handle file transfer
+            await ws.send(json.dumps({
+                "type": "FILE_START",
+                "from": state.server_id,
+                "to": env.get("from"),
+                "ts": now_ms(),
+                "payload": {"message": f"File transfer to {target} not implemented in demo"},
+                "sig": ""
+            }))
             return
-        if parts and parts[0] == "/group" and len(parts) >= 3:
-            group_id, text = parts[1], parts[2]
-            # Encrypt message with group public key (demo: use server's key)
-            group_pub = state.server_pub
-            ct = rsa_oaep_wrap(group_pub, text.encode())
-            env2 = {"type":"MSG_GROUP","from":env.get("from"),"to":group_id,"ts":now_ms(),"payload":{"group_id":group_id,"ciphertext":ct,"sender_pub":"","content_sig":""}}
-            await handle_user_message(state, router, ws, env2)
-            return
+            
         await ws.send(Envelope.error(state.server_id, env.get("from"), "UNKNOWN_TYPE", "Unknown client command"))
         return
 
